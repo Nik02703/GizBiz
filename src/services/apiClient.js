@@ -32,14 +32,43 @@ export async function checkHealth() {
  * @param {object|null} params.aoi - Area of Interest metadata
  * @returns {Promise<import('../types/analysis.js').AnalysisResult>}
  */
-export async function analyzeImage({ imageFile, imageBase64, query, aoi }) {
+export async function analyzeImage({
+  imageFile,
+  imageBase64,
+  query,
+  aoi,
+  isBitemporal = false,
+  image1File,
+  image1Base64,
+  date1,
+  image2File,
+  image2Base64,
+  date2,
+}) {
   const formData = new FormData();
 
-  if (imageFile) {
-    formData.append('image', imageFile);
-  } else if (imageBase64) {
-    formData.append('imageBase64', imageBase64);
-    formData.append('imageMimeType', 'image/jpeg');
+  if (isBitemporal) {
+    formData.append('isBitemporal', 'true');
+    if (image1File) {
+      formData.append('image1', image1File);
+    } else if (image1Base64) {
+      formData.append('image1Base64', image1Base64);
+    }
+    if (date1) formData.append('date1', date1);
+
+    if (image2File) {
+      formData.append('image2', image2File);
+    } else if (image2Base64) {
+      formData.append('image2Base64', image2Base64);
+    }
+    if (date2) formData.append('date2', date2);
+  } else {
+    if (imageFile) {
+      formData.append('image', imageFile);
+    } else if (imageBase64) {
+      formData.append('imageBase64', imageBase64);
+      formData.append('imageMimeType', 'image/jpeg');
+    }
   }
 
   formData.append('query', query);

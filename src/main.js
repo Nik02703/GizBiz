@@ -6,7 +6,7 @@
  */
 
 import { renderNavbar, updateAIStatus } from './components/Navbar.js';
-import { initMap, clearAOI, flyTo, setRectangleAOI, getMap, getMapElement, ensureSatelliteView, displayHighlights, clearHighlights, focusHighlight, toggleHighlightsVisibility, displayOSMData, toggleOSMLayer, clearOSMData, getOSMStats, startDrawingRectangle, startDrawingPolygon, cancelDrawing } from './components/MapView.js';
+import { initMap, clearAOI, flyTo, setRectangleAOI, getMap, getMapElement, ensureSatelliteView, displayHighlights, clearHighlights, focusHighlight, toggleHighlightsVisibility, displayOSMData, toggleOSMLayer, clearOSMData, getOSMStats, startDrawingRectangle, startDrawingPolygon, cancelDrawing, setSearchLocationMarker, clearSearchLocationMarker } from './components/MapView.js';
 import { renderAOIPanel } from './components/AOIPanel.js';
 import { renderAnalysisPanel, showAnalysisError, setAnalyzeEnabled } from './components/AnalysisPanel.js';
 import { renderResults, clearResults } from './components/ResultsPanel.js';
@@ -15,6 +15,7 @@ import { renderDemoSelector, DEMO_LOCATIONS } from './components/DemoSelector.js
 import { renderImagePreview } from './components/ImagePreview.js';
 import { showLoading, hideLoading } from './components/LoadingStages.js';
 import { preloadThemeTransitionVideo } from './components/ThemeTransition.js';
+import { initLocationSearch } from './components/LocationSearch.js';
 
 import { checkHealth, analyzeImage } from './services/apiClient.js';
 import { queryOSMData } from './services/osmClient.js';
@@ -28,7 +29,12 @@ import { fileToDataUrl, resizeImage } from './utils/imageUtils.js';
 const state = {
   aoi: null,
   imageSource: 'map', // 'map' | 'sentinel' | 'upload'
-  uploadedImage: null, // { dataUrl, blob, file }
+  uploadMode: 'bitemporal', // 'single' | 'bitemporal'
+  uploadedImage: null, // { dataUrl, blob, file, name, size, date }
+  bitemporal: {
+    image1: null, // { dataUrl, blob, file, name, size, date }
+    image2: null, // { dataUrl, blob, file, name, size, date }
+  },
   capturedImage: null, // { dataUrl, blob }
   sentinelImage: null, // { dataUrl, metadata }
   sentinelPreset: 'true_color', // 'true_color' | 'false_color' | 'ndvi' | 'swir'
@@ -105,6 +111,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   initMap('map', {
     onAOISelected: handleAOISelected,
     onAOICleared: handleAOICleared,
+  });
+
+  // Initialize location search bar on the map
+  initLocationSearch(handleSearchLocationSelected, () => {
+    clearSearchLocationMarker();
   });
 
   // Render initial panels
@@ -243,6 +254,31 @@ async function handleDemoLocationSelected(location) {
   }, 1800);
 }
 
+/**
+ * Handle a location selected from the search bar.
+ * Flies the map to the geocoded coordinates and drops a pin.
+ */
+function handleSearchLocationSelected(location) {
+  const mapInstance = getMap();
+  if (!mapInstance) return;
+
+  ensureSatelliteView();
+
+  // If the result has bounds, fit to them; otherwise fly to the point
+  if (location.bounds) {
+    const bounds = window.L.latLngBounds(
+      window.L.latLng(location.bounds[0][0], location.bounds[0][1]),
+      window.L.latLng(location.bounds[1][0], location.bounds[1][1])
+    );
+    mapInstance.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+  } else {
+    flyTo(location.lat, location.lng, 14);
+  }
+
+  // Drop high-visibility search location pin
+  setSearchLocationMarker(location.lat, location.lng, location.name, location.fullName);
+}
+
 function handleHistoryEntrySelected(entry) {
   // Restore the result
   state.currentResult = entry.result;
@@ -257,21 +293,63 @@ function handleHistoryEntrySelected(entry) {
   }
 }
 
-async function handleImageUpload(file) {
+async function handleImageUpload(file, slot = 'single') {
   try {
     const dataUrl = await fileToDataUrl(file);
     const resized = await resizeImage(dataUrl, 1024, 0.85);
 
-    state.uploadedImage = {
+    const imageObj = {
       dataUrl: resized.dataUrl,
       blob: resized.blob,
       file,
+      name: file.name,
+      size: file.size,
+      date: slot === 'image1' ? (state.bitemporal.image1?.date || '2021-03-15')
+          : slot === 'image2' ? (state.bitemporal.image2?.date || '2024-03-15')
+          : (state.uploadedImage?.date || new Date().toISOString().split('T')[0]),
     };
+
+    if (slot === 'image1') {
+      state.bitemporal.image1 = imageObj;
+    } else if (slot === 'image2') {
+      state.bitemporal.image2 = imageObj;
+    } else {
+      state.uploadedImage = imageObj;
+    }
 
     renderAnalysisPanelFull();
   } catch (err) {
     showAnalysisError(`Failed to load image: ${err.message}`);
   }
+}
+
+function handleImageClear(slot = 'single') {
+  if (slot === 'image1') {
+    state.bitemporal.image1 = null;
+  } else if (slot === 'image2') {
+    state.bitemporal.image2 = null;
+  } else {
+    state.uploadedImage = null;
+  }
+  renderAnalysisPanelFull();
+}
+
+function handleDateChange(slot, date) {
+  if (slot === 'image1') {
+    if (state.bitemporal.image1) state.bitemporal.image1.date = date;
+    else state.bitemporal.image1 = { date };
+  } else if (slot === 'image2') {
+    if (state.bitemporal.image2) state.bitemporal.image2.date = date;
+    else state.bitemporal.image2 = { date };
+  } else if (slot === 'single') {
+    if (state.uploadedImage) state.uploadedImage.date = date;
+  }
+  renderAnalysisPanelFull();
+}
+
+function handleUploadModeChange(mode) {
+  state.uploadMode = mode;
+  renderAnalysisPanelFull();
 }
 
 function handleSourceChange(source) {
@@ -331,14 +409,18 @@ async function handleAnalyze({ query }) {
     return;
   }
 
-  if (state.imageSource === 'upload' && !state.uploadedImage) {
-    showAnalysisError('Please upload a satellite image first.');
-    return;
-  }
-
-  if (!state.aiAvailable) {
-    showAnalysisError('AI service is not available. Check your API key in .env and restart the server.');
-    return;
+  if (state.imageSource === 'upload') {
+    if (state.uploadMode === 'bitemporal') {
+      if (!state.bitemporal.image1 || !state.bitemporal.image2) {
+        showAnalysisError('Please upload both satellite images (T1 baseline and T2 recent) for bi-temporal sensing.');
+        return;
+      }
+    } else {
+      if (!state.uploadedImage) {
+        showAnalysisError('Please upload a satellite image first.');
+        return;
+      }
+    }
   }
 
   if (state.isAnalyzing) return;
@@ -354,74 +436,66 @@ async function handleAnalyze({ query }) {
   showLoading(loadingContainer);
 
   try {
-    let imageData = null;
+    let result = null;
+    let imageUrl = null;
+    let bitemporalData = null;
 
-    if (state.imageSource === 'sentinel') {
-      // If Sentinel image isn't acquired yet, fetch it automatically
+    if (state.imageSource === 'upload' && state.uploadMode === 'bitemporal') {
+      const img1 = state.bitemporal.image1;
+      const img2 = state.bitemporal.image2;
+      bitemporalData = {
+        image1Url: img1.dataUrl,
+        image2Url: img2.dataUrl,
+        date1: img1.date || '2021-03-15',
+        date2: img2.date || '2024-03-15',
+      };
+      imageUrl = img2.dataUrl;
+
+      result = await analyzeImage({
+        isBitemporal: true,
+        image1File: img1.blob,
+        date1: bitemporalData.date1,
+        image2File: img2.blob,
+        date2: bitemporalData.date2,
+        query: query.trim(),
+        aoi: state.aoi,
+      });
+    } else if (state.imageSource === 'upload' && state.uploadedImage) {
+      imageUrl = state.uploadedImage.dataUrl;
+      result = await analyzeImage({
+        imageFile: state.uploadedImage.blob,
+        imageBase64: null,
+        query: query.trim(),
+        aoi: state.aoi,
+      });
+    } else if (state.imageSource === 'sentinel') {
       if (!state.sentinelImage) {
         const res = await acquireFromSentinel(state.aoi, { preset: state.sentinelPreset });
         state.sentinelImage = res;
       }
-      imageData = {
+      imageUrl = state.sentinelImage.dataUrl;
+      result = await analyzeImage({
         imageFile: null,
         imageBase64: state.sentinelImage.dataUrl,
-      };
-    } else if (state.imageSource === 'upload' && state.uploadedImage) {
-      imageData = {
-        imageFile: state.uploadedImage.blob,
-        imageBase64: null,
-      };
+        query: query.trim(),
+        aoi: state.aoi,
+      });
     } else {
-      // Ensure the selected AOI is within the viewport before capture
-      if (state.imageSource === 'map' && state.aoi) {
-        const mapInstance = getMap();
-        if (mapInstance && state.aoi.coordinates?.length >= 2 && window.L) {
-          const latLngs = state.aoi.coordinates.map(([lat, lng]) => window.L.latLng(lat, lng));
-          const bounds = window.L.latLngBounds(latLngs);
-          const mapBounds = mapInstance.getBounds();
-
-          // Calculate size of AOI on screen
-          const points = state.aoi.coordinates.map(([lat, lng]) =>
-            mapInstance.latLngToContainerPoint(window.L.latLng(lat, lng))
-          );
-          const w = Math.max(...points.map((p) => p.x)) - Math.min(...points.map((p) => p.x));
-          const h = Math.max(...points.map((p) => p.y)) - Math.min(...points.map((p) => p.y));
-
-          if (!mapBounds.contains(bounds) || w < 160 || h < 120) {
-            mapInstance.fitBounds(bounds, { padding: [50, 50], maxZoom: 16, animate: false });
-            // Wait for Leaflet to render tiles at the new bounds
-            await new Promise((resolve) => setTimeout(resolve, 500));
-          }
-        }
-      }
-
-      // Capture map view cropped to selected Area of Interest
+      // Map view capture
       const mapEl = getMapElement();
       const mapInstance = getMap();
       const captured = await captureFromMap(mapEl, state.aoi, mapInstance);
       state.capturedImage = captured;
-      imageData = {
+      imageUrl = captured.dataUrl;
+      result = await analyzeImage({
         imageFile: null,
         imageBase64: captured.dataUrl,
-      };
+        query: query.trim(),
+        aoi: state.aoi,
+      });
     }
 
-    // Call AI analysis
-    const result = await analyzeImage({
-      imageFile: imageData.imageFile,
-      imageBase64: imageData.imageBase64,
-      query: query.trim(),
-      aoi: state.aoi,
-    });
-
     state.currentResult = result;
-
-    // Get the image URL for display
-    const imageUrl = state.imageSource === 'upload'
-      ? state.uploadedImage.dataUrl
-      : state.imageSource === 'sentinel'
-      ? state.sentinelImage?.dataUrl
-      : state.capturedImage?.dataUrl;
 
     // Hide loading
     hideLoading(loadingContainer);
@@ -431,7 +505,7 @@ async function handleAnalyze({ query }) {
       renderResults(els.resultsPanel, result, imageUrl, {
         onHighlightClick: (idx) => focusHighlight(idx),
         onToggleHighlights: (visible) => toggleHighlightsVisibility(visible),
-      });
+      }, bitemporalData);
 
       // Display AI highlights directly on the map if present
       if (result.highlights && result.highlights.length > 0 && state.aoi) {
@@ -481,13 +555,18 @@ function renderAnalysisPanelFull() {
     state.imageSource === 'sentinel'
       ? state.sentinelImage?.dataUrl
       : state.imageSource === 'upload'
-      ? state.uploadedImage?.dataUrl
+      ? (state.uploadMode === 'bitemporal'
+          ? (state.bitemporal.image2?.dataUrl || state.bitemporal.image1?.dataUrl)
+          : state.uploadedImage?.dataUrl)
       : null;
 
   renderAnalysisPanel(els.analysisPanel, {
     hasAOI: !!state.aoi,
     aiAvailable: state.aiAvailable,
     imageSource: state.imageSource,
+    uploadMode: state.uploadMode,
+    uploadedImage: state.uploadedImage,
+    bitemporalState: state.bitemporal,
     imagePreviewUrl,
     sentinelState: {
       image: state.sentinelImage,
@@ -497,6 +576,9 @@ function renderAnalysisPanelFull() {
     },
     onAnalyze: handleAnalyze,
     onImageUpload: handleImageUpload,
+    onImageClear: handleImageClear,
+    onDateChange: handleDateChange,
+    onUploadModeChange: handleUploadModeChange,
     onSourceChange: handleSourceChange,
     onSentinelAcquire: handleSentinelAcquire,
     onSentinelPresetChange: handleSentinelPresetChange,

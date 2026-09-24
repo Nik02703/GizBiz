@@ -78,6 +78,47 @@ export class OpenAIProvider {
     return this.parseResponse(text);
   }
 
+  async analyzeBitemporal(image1Buffer, mime1, date1, image2Buffer, mime2, date2, query, aoiMetadata) {
+    const d1 = date1 || 'T1';
+    const d2 = date2 || 'T2';
+    const aoiContext = aoiMetadata
+      ? `\n\nArea of Interest Context:\n- Center: ${aoiMetadata.center?.lat?.toFixed(4)}, ${aoiMetadata.center?.lng?.toFixed(4)}\n- Selected Area: ${aoiMetadata.area || 'unknown'}`
+      : '';
+
+    const userPrompt = `Compare these two bi-temporal satellite images (T1: ${d1} vs T2: ${d2}).\nQuestion/Task: ${query}${aoiContext}\nHighlight and delineate specific areas where significant change has occurred.`;
+
+    const dataUrl1 = `data:${mime1 || 'image/jpeg'};base64,${image1Buffer.toString('base64')}`;
+    const dataUrl2 = `data:${mime2 || 'image/jpeg'};base64,${image2Buffer.toString('base64')}`;
+
+    const response = await this.client.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [
+        {
+          role: 'system',
+          content: `${SYSTEM_PROMPT}\n\nSPECIAL BI-TEMPORAL INSTRUCTION: You are given two images for the same area at Time 1 (${d1}) and Time 2 (${d2}). Analyze and delineate the physical changes between them, providing an 'analysis_type': 'bitemporal_change_detection', 'is_bitemporal': true, 'temporal_info': { 'date1': '${d1}', 'date2': '${d2}' }, and 'change_summary' with % shifts.`,
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: `Image 1 (Time T1: ${d1}):` },
+            { type: 'image_url', image_url: { url: dataUrl1, detail: 'high' } },
+            { type: 'text', text: `Image 2 (Time T2: ${d2}):` },
+            { type: 'image_url', image_url: { url: dataUrl2, detail: 'high' } },
+            { type: 'text', text: userPrompt },
+          ],
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 2048,
+    });
+
+    const text = response.choices[0]?.message?.content || '';
+    const parsed = this.parseResponse(text);
+    parsed.is_bitemporal = true;
+    parsed.temporal_info = parsed.temporal_info || { date1: d1, date2: d2 };
+    return parsed;
+  }
+
   parseResponse(text) {
     let cleaned = text.trim();
     if (cleaned.startsWith('```')) {
@@ -115,6 +156,9 @@ export class OpenAIProvider {
   validateResponse(data) {
     return {
       analysis_type: data.analysis_type || 'general_analysis',
+      is_bitemporal: !!data.is_bitemporal,
+      temporal_info: data.temporal_info || null,
+      change_summary: data.change_summary || null,
       answer: data.answer || 'No answer provided.',
       confidence: typeof data.confidence === 'number'
         ? Math.max(0, Math.min(1, data.confidence))

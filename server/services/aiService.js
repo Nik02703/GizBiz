@@ -75,6 +75,56 @@ export async function analyzeImage(imageBuffer, mimeType, query, aoiMetadata) {
 }
 
 /**
+ * Send two bi-temporal images + dates + query for AI change detection analysis.
+ *
+ * @param {Buffer} image1Buffer - T1 Image Buffer
+ * @param {string} mime1 - MIME type of Image 1
+ * @param {string} date1 - Capture date of Image 1
+ * @param {Buffer} image2Buffer - T2 Image Buffer
+ * @param {string} mime2 - MIME type of Image 2
+ * @param {string} date2 - Capture date of Image 2
+ * @param {string} query - Natural language query
+ * @param {object} aoiMetadata - Area of Interest metadata
+ * @returns {Promise<object>} Structured bi-temporal analysis result
+ */
+export async function analyzeBitemporal(image1Buffer, mime1, date1, image2Buffer, mime2, date2, query, aoiMetadata) {
+  if (!providerInstance) {
+    throw new Error('AI provider not initialized. Check your .env configuration.');
+  }
+
+  const startTime = Date.now();
+
+  let result;
+  if (typeof providerInstance.analyzeBitemporal === 'function') {
+    result = await providerInstance.analyzeBitemporal(
+      image1Buffer, mime1, date1,
+      image2Buffer, mime2, date2,
+      query, aoiMetadata
+    );
+  } else {
+    result = await providerInstance.analyze(
+      image2Buffer, mime2,
+      `[Bi-temporal comparison between ${date1} and ${date2}]: ${query}`,
+      aoiMetadata
+    );
+  }
+
+  const elapsed = Date.now() - startTime;
+
+  return {
+    ...result,
+    is_bitemporal: true,
+    metadata: {
+      model: currentProviderName,
+      processing_time_ms: elapsed,
+      timestamp: new Date().toISOString(),
+      aoi: aoiMetadata || null,
+      temporal_info: { date1, date2 },
+    },
+  };
+}
+
+/**
  * Check if the AI service is available.
  */
 export function getStatus() {

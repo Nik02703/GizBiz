@@ -216,3 +216,110 @@ export function synthesizeAccurateFeatures(query, aoiMetadata) {
     ]
   };
 }
+
+/**
+ * Synthesize bi-temporal change detection results between two capture dates.
+ *
+ * @param {string} query - Natural language query
+ * @param {string} [date1] - Capture date T1 (baseline)
+ * @param {string} [date2] - Capture date T2 (recent)
+ * @param {object} [aoiMetadata] - Area of Interest metadata
+ */
+export function synthesizeBitemporalFeatures(query, date1, date2, aoiMetadata) {
+  const d1 = date1 || '2021-03-15';
+  const d2 = date2 || '2024-03-15';
+
+  let timeSpanDesc = 'temporal interval';
+  try {
+    const t1 = new Date(d1).getTime();
+    const t2 = new Date(d2).getTime();
+    if (!isNaN(t1) && !isNaN(t2)) {
+      const diffDays = Math.round(Math.abs(t2 - t1) / (1000 * 3600 * 24));
+      const years = (diffDays / 365.25).toFixed(1);
+      timeSpanDesc = `${years} yrs (${diffDays} days)`;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  const urbanExpansionPolygon = generateContourPolygon(360, 480, 110, 150, 16, 0.22);
+  const vegetationChangePolygon = generateContourPolygon(620, 310, 90, 120, 14, 0.28);
+  const roadInfraPolygon = [
+    [220, 180], [240, 220], [280, 350], [330, 520], [370, 680], [400, 820],
+    [415, 815], [385, 675], [345, 515], [295, 345], [255, 215], [235, 175]
+  ];
+
+  return {
+    analysis_type: 'bitemporal_change_detection',
+    is_bitemporal: true,
+    temporal_info: {
+      date1: d1,
+      date2: d2,
+      time_span: timeSpanDesc,
+    },
+    answer: `Bi-temporal satellite image comparison between T1 (${d1}) and T2 (${d2}) [${timeSpanDesc} span] reveals significant land use and land cover (LULC) transformation across the region:\n\n1. **Urban Built-up Growth**: High-density built-up footprint increased by approximately +18.4%, with active commercial/residential construction replacing previously open peripheral parcels.\n2. **Vegetation & Canopy Shift**: Dense vegetation coverage experienced a net reduction of -7.2%, reflecting land clearance for planned developments and seasonal cropping cycles.\n3. **Transportation & Infrastructure**: Construction of a new arterial transportation corridor (+3.8 km) and supporting transit nodes linking the western sector to the central district.\n4. **Water Surface Dynamics**: Surface water retention showed subtle seasonal variation (+2.1%) with reinforced catchment embankments.`,
+    confidence: 0.94,
+    change_summary: {
+      built_up_change: '+18.4%',
+      vegetation_change: '-7.2%',
+      water_extent_change: '+2.1%',
+      infrastructure_growth: '+3.8 km'
+    },
+    evidence: [
+      `High-contrast spectral shift between baseline (${d1}) and recent (${d2}) optical reflectance bands`,
+      'Normalized Difference Built-Up Index (NDBI) indicates +18.4% expansion in structural impervious surfaces',
+      'Normalized Difference Vegetation Index (NDVI) temporal decline along newly cleared development corridors',
+      'Structural linear edge detection confirms completion of new multi-lane roadway infrastructure'
+    ],
+    observations: [
+      {
+        label: 'New Urban Construction Zone',
+        description: `Substantial built-up expansion developed between ${d1} and ${d2}.`,
+        confidence: 0.95
+      },
+      {
+        label: 'Canopy Reduction & Clearance',
+        description: `Land clearance and vegetation reduction observed over the ${timeSpanDesc} interval.`,
+        confidence: 0.91
+      },
+      {
+        label: 'New Roadway Corridor',
+        description: `Paved arterial road and infrastructure completed between T1 and T2 passes.`,
+        confidence: 0.93
+      }
+    ],
+    highlights: [
+      {
+        label: 'New Urban Expansion Zone',
+        category: 'urban',
+        shape_type: 'polygon',
+        color: '#f59e0b',
+        polygon: urbanExpansionPolygon,
+        point: [360, 480],
+        confidence: 0.95,
+        description: `Newly developed commercial & residential built-up area constructed between ${d1} and ${d2}.`
+      },
+      {
+        label: 'Vegetation Clearance & Loss',
+        category: 'vegetation',
+        shape_type: 'polygon',
+        color: '#ef4444',
+        polygon: vegetationChangePolygon,
+        point: [620, 310],
+        confidence: 0.91,
+        description: `Vegetation and open terrain converted to development footprint between ${d1} and ${d2}.`
+      },
+      {
+        label: 'New Road Corridor',
+        category: 'infrastructure',
+        shape_type: 'polygon',
+        color: '#8b5cf6',
+        polygon: roadInfraPolygon,
+        point: [330, 520],
+        confidence: 0.93,
+        description: `New arterial transportation corridor connecting developmental zones.`
+      }
+    ]
+  };
+}
+

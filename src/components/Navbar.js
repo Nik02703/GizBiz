@@ -120,6 +120,36 @@ export function renderNavbar(container, { onDemoClick, onHistoryClick, onThemeTo
       </div>
     </div>
 
+    <!-- Centered Location Search Bar -->
+    <div class="nav-center-search">
+      <div id="location-search" class="location-search">
+        <div class="location-search-input-wrap">
+          <svg class="location-search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/>
+            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            type="text"
+            id="location-search-input"
+            class="location-search-input"
+            placeholder="Search city, address, or landmark…"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="location-search-clear" id="location-search-clear" title="Clear search" style="display: none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+          <div class="location-search-spinner" id="location-search-spinner" style="display: none;">
+            <div class="spinner-ring"></div>
+          </div>
+        </div>
+        <div class="location-search-results" id="location-search-results"></div>
+      </div>
+    </div>
+
     <!-- Actions & Controls -->
     <div class="nav-actions">
       <!-- Dedicated Theme Switch Button -->
@@ -127,11 +157,6 @@ export function renderNavbar(container, { onDemoClick, onHistoryClick, onThemeTo
         <span class="theme-btn-icon" id="theme-btn-icon">☀️</span>
         <span class="theme-btn-label" id="theme-btn-label">Dark Mode</span>
       </button>
-
-      <div class="nav-status" id="ai-status">
-        <span class="status-dot checking" id="status-dot"></span>
-        <span id="status-text">Checking...</span>
-      </div>
 
       <button class="nav-btn btn-sunny" id="btn-demo" title="Demo Mode">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">

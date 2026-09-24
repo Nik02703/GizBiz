@@ -45,6 +45,9 @@ let osmFeatureCounts = {
 // Active drawing handler reference
 let activeDrawHandler = null;
 
+// Search location marker reference
+let searchMarker = null;
+
 const HIGHLIGHT_STYLES = {
   water: { stroke: '#06b6d4', fill: 'rgba(6, 182, 212, 0.35)', icon: '💧', label: 'Water' },
   water_body: { stroke: '#06b6d4', fill: 'rgba(6, 182, 212, 0.35)', icon: '💧', label: 'Water' },
@@ -80,6 +83,8 @@ export function initMap(containerId, callbacks) {
   map = L.map(containerId, {
     center: [22.5, 78.9],
     zoom: 5,
+    minZoom: 3,
+    maxZoom: 19,
     zoomControl: false,
     attributionControl: false,
   });
@@ -89,19 +94,24 @@ export function initMap(containerId, callbacks) {
 
 
 
-  // Satellite tile layer (Esri World Imagery — free)
+  // Satellite tile layer (Esri World Imagery)
+  // maxNativeZoom: 17 prevents Esri from serving grey "Map data not yet available" tiles at high zoom levels
   satelliteTile = L.tileLayer(
     'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
     {
       maxZoom: 19,
+      maxNativeZoom: 17,
+      attribution: 'Tiles &copy; Esri',
     }
   ).addTo(map);
 
-  // Street tile layer (OSM dark)
+  // Street tile layer (OpenStreetMap Standard — worldwide street coverage up to zoom 19, no API key required)
   streetTile = L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
     {
       maxZoom: 19,
+      maxNativeZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
     }
   );
 
@@ -220,19 +230,6 @@ function buildMapControls() {
     </div>
   `;
 
-  // Location search bar
-  const searchDiv = document.createElement('div');
-  searchDiv.className = 'location-search';
-  searchDiv.innerHTML = `
-    <svg class="location-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-      <circle cx="11" cy="11" r="8"/>
-      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-    </svg>
-    <input type="text" id="location-search-input" placeholder="Search location..." autocomplete="off" />
-    <div class="search-results" id="search-results"></div>
-  `;
-  document.getElementById('map-container').appendChild(searchDiv);
-
   // Layer switch
   const layerDiv = document.createElement('div');
   layerDiv.className = 'layer-switch';
@@ -264,76 +261,61 @@ function buildMapControls() {
   document.getElementById('btn-layer-switch').addEventListener('click', () => {
     toggleLayer();
   });
-
-  // Location search with debounce
-  let searchTimer = null;
-  const searchInput = document.getElementById('location-search-input');
-  searchInput.addEventListener('input', (e) => {
-    clearTimeout(searchTimer);
-    const q = e.target.value.trim();
-    if (q.length < 3) {
-      document.getElementById('search-results').classList.remove('visible');
-      return;
-    }
-    searchTimer = setTimeout(() => searchLocation(q), 400);
-  });
-
-  searchInput.addEventListener('blur', () => {
-    setTimeout(() => {
-      document.getElementById('search-results').classList.remove('visible');
-    }, 200);
-  });
-
-  // Map Legal Attribution Banner (Esri & OpenStreetMap)
-  const attrDiv = document.createElement('div');
-  attrDiv.className = 'map-attribution-banner';
-  attrDiv.id = 'map-attribution-banner';
-  attrDiv.innerHTML = `
-    <span>Tiles &copy; <a href="https://www.esri.com" target="_blank" rel="noopener">Esri</a></span>
-    <span class="attr-sep">&bull;</span>
-    <span>Data &copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a></span>
-  `;
-  document.getElementById('map-container').appendChild(attrDiv);
 }
 
 /**
- * Search for a location using Nominatim.
+ * Set a highlighted pin and pulse on the map for a searched location.
+ *
+ * @param {number} lat
+ * @param {number} lng
+ * @param {string} name
+ * @param {string} [detail]
  */
-async function searchLocation(query) {
-  const resultsDiv = document.getElementById('search-results');
-  try {
-    const res = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5`
-    );
-    const data = await res.json();
+export function setSearchLocationMarker(lat, lng, name, detail) {
+  if (!map || typeof window.L === 'undefined') return;
+  clearSearchLocationMarker();
 
-    if (data.length === 0) {
-      resultsDiv.innerHTML = '<div class="search-result-item">No results found</div>';
-      resultsDiv.classList.add('visible');
-      return;
-    }
+  const icon = window.L.divIcon({
+    className: 'search-location-marker-wrapper',
+    html: `
+      <div class="search-location-marker">
+        <div class="search-marker-pulse"></div>
+        <div class="search-marker-pin"></div>
+      </div>
+    `,
+    iconSize: [30, 42],
+    iconAnchor: [15, 36],
+    popupAnchor: [0, -32],
+  });
 
-    resultsDiv.innerHTML = data
-      .map(
-        (item) =>
-          `<div class="search-result-item" data-lat="${item.lat}" data-lng="${item.lon}">${item.display_name}</div>`
-      )
-      .join('');
+  searchMarker = window.L.marker([lat, lng], { icon }).addTo(map);
 
-    resultsDiv.classList.add('visible');
+  const latStr = typeof lat === 'number' ? lat.toFixed(4) : lat;
+  const lngStr = typeof lng === 'number' ? lng.toFixed(4) : lng;
 
-    resultsDiv.querySelectorAll('.search-result-item').forEach((el) => {
-      el.addEventListener('click', () => {
-        const lat = parseFloat(el.dataset.lat);
-        const lng = parseFloat(el.dataset.lng);
-        map.setView([lat, lng], 14);
-        resultsDiv.classList.remove('visible');
-        document.getElementById('location-search-input').value = el.textContent.substring(0, 40);
-      });
-    });
-  } catch {
-    resultsDiv.innerHTML = '<div class="search-result-item">Search failed</div>';
-    resultsDiv.classList.add('visible');
+  const popupHtml = `
+    <div class="search-popup-title">${escapeHtml(name || 'Selected Location')}</div>
+    ${detail ? `<div class="search-popup-detail">${escapeHtml(detail)}</div>` : ''}
+    <div class="search-popup-coords">${latStr}°, ${lngStr}°</div>
+  `;
+
+  searchMarker.bindPopup(popupHtml, {
+    className: 'search-marker-popup',
+    closeButton: true,
+    autoClose: false,
+    closeOnClick: false,
+  }).openPopup();
+
+  return searchMarker;
+}
+
+/**
+ * Clear the current search location marker.
+ */
+export function clearSearchLocationMarker() {
+  if (searchMarker && map) {
+    map.removeLayer(searchMarker);
+    searchMarker = null;
   }
 }
 

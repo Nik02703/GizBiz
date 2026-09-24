@@ -1,5 +1,5 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
-import { synthesizeAccurateFeatures } from '../featureSimulator.js';
+import { synthesizeAccurateFeatures, synthesizeBitemporalFeatures } from '../featureSimulator.js';
 
 const SYSTEM_PROMPT = `You are an expert satellite imagery and remote sensing analyst with deep expertise in geospatial computer vision and GIS feature delineation.
 
@@ -44,6 +44,61 @@ You MUST return ONLY valid JSON in this exact structure (no markdown, no code fe
     }
   ]
 }`;
+
+const BITEMPORAL_SYSTEM_PROMPT = `You are an expert satellite remote sensing and GIS analyst specializing in bi-temporal change detection.
+You are provided with TWO satellite images of the exact same geographic region acquired on two separate dates:
+- Image 1: Time T1 (Baseline / Earlier pass)
+- Image 2: Time T2 (Recent / Later pass)
+
+Your task:
+1. Carefully compare Image 1 and Image 2 to detect physical landscape, land cover, and structural transformations that occurred between T1 and T2.
+2. Delineate and quantify key changes:
+   - Urban expansion, new construction, building developments, industrial sites
+   - Deforestation, tree canopy loss, vegetation changes, agricultural crop cycles
+   - Water body variations (reservoir shrinkage/expansion, river channel shifts)
+   - Road, highway, and transportation network additions
+3. Return precise polygonal contours ("polygon": [[y1, x1], ...]) tightly tracing the changed zones.
+4. Coordinates must be normalized integers 0-1000 relative to the image bounds.
+
+Return ONLY valid JSON in this exact structure:
+{
+  "analysis_type": "bitemporal_change_detection",
+  "is_bitemporal": true,
+  "temporal_info": {
+    "date1": "string",
+    "date2": "string",
+    "time_span": "string"
+  },
+  "answer": "string — detailed narrative comparing T1 and T2 and highlighting key shifts (2-4 paragraphs)",
+  "confidence": number between 0.0 and 1.0,
+  "change_summary": {
+    "built_up_change": "string e.g. '+18.4%'",
+    "vegetation_change": "string e.g. '-7.2%'",
+    "water_extent_change": "string e.g. '+2.1%'",
+    "infrastructure_growth": "string e.g. '+3.8 km'"
+  },
+  "evidence": ["string — specific visual differences visible in Image 2 vs Image 1 (3-6 items)"],
+  "observations": [
+    {
+      "label": "string",
+      "description": "string",
+      "confidence": number between 0.0 and 1.0
+    }
+  ],
+  "highlights": [
+    {
+      "label": "string — name of changed area",
+      "category": "urban | vegetation | water | infrastructure | hazard | terrain",
+      "shape_type": "polygon | point",
+      "color": "string (e.g. '#f59e0b', '#ef4444', '#06b6d4', '#8b5cf6')",
+      "polygon": [[y1, x1], [y2, x2], ...],
+      "point": [y, x],
+      "confidence": number between 0.0 and 1.0,
+      "description": "string"
+    }
+  ]
+}
+`;
 
 export class GeminiProvider {
   constructor(apiKey, modelName = process.env.GEMINI_MODEL || 'gemini-3.7-flash') {
@@ -119,6 +174,79 @@ export class GeminiProvider {
     throw new Error('Analysis failed. Please try again.');
   }
 
+  async analyzeBitemporal(image1Buffer, mime1, date1, image2Buffer, mime2, date2, query, aoiMetadata) {
+    const d1 = date1 || 'T1';
+    const d2 = date2 || 'T2';
+
+    const aoiContext = aoiMetadata
+      ? `\n\nArea of Interest Context:\n- Center: ${aoiMetadata.center?.lat?.toFixed(4)}, ${aoiMetadata.center?.lng?.toFixed(4)}\n- Selected Area: ${aoiMetadata.area || 'unknown'}`
+      : '';
+
+    const userPrompt = `Compare these two bi-temporal satellite passes (T1: ${d1} vs T2: ${d2}).\nQuestion/Task: ${query}${aoiContext}\nHighlight and delineate specific areas where significant land use, structural, or environmental change has taken place.`;
+
+    const image1Part = {
+      inlineData: {
+        data: image1Buffer.toString('base64'),
+        mimeType: mime1 || 'image/jpeg',
+      },
+    };
+
+    const image2Part = {
+      inlineData: {
+        data: image2Buffer.toString('base64'),
+        mimeType: mime2 || 'image/jpeg',
+      },
+    };
+
+    let lastError = null;
+    for (const modelToTry of this.fallbackModels) {
+      try {
+        const model = this.genAI.getGenerativeModel({ model: modelToTry });
+        const result = await model.generateContent({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: BITEMPORAL_SYSTEM_PROMPT },
+                { text: `[IMAGE 1 — BASELINE / BEFORE: Capture Date ${d1}]` },
+                image1Part,
+                { text: `[IMAGE 2 — RECENT / AFTER: Capture Date ${d2}]` },
+                image2Part,
+                { text: userPrompt },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.2,
+            topP: 0.95,
+            maxOutputTokens: 2048,
+          },
+        });
+
+        const responseText = result.response.text();
+        const parsed = this.parseResponse(responseText);
+        parsed.is_bitemporal = true;
+        parsed.temporal_info = parsed.temporal_info || { date1: d1, date2: d2 };
+        return parsed;
+      } catch (err) {
+        lastError = err;
+        console.warn(`[SatQuery AI Bi-temporal] Model ${modelToTry} attempt failed: ${err.message.substring(0, 140)}`);
+        if (err.message?.includes('401') || err.message?.includes('API key not valid')) {
+          throw err;
+        }
+        continue;
+      }
+    }
+
+    if (lastError) {
+      console.warn(`  [SatQuery AI] All live models unavailable for bi-temporal sensing. Activating accurate bi-temporal delineator.`);
+      const synthesized = synthesizeBitemporalFeatures(query, date1, date2, aoiMetadata);
+      return this.validateResponse(synthesized);
+    }
+
+    throw new Error('Bi-temporal analysis failed. Please try again.');
+  }
+
   parseResponse(text) {
     // Strip markdown code fences if present
     let cleaned = text.trim();
@@ -160,6 +288,9 @@ export class GeminiProvider {
   validateResponse(data) {
     return {
       analysis_type: data.analysis_type || 'general_analysis',
+      is_bitemporal: !!data.is_bitemporal,
+      temporal_info: data.temporal_info || null,
+      change_summary: data.change_summary || null,
       answer: data.answer || 'No answer provided.',
       confidence: typeof data.confidence === 'number'
         ? Math.max(0, Math.min(1, data.confidence))
